@@ -18,5 +18,5 @@ anchors=12.64,19.39, 37.88,51.48, 55.71,138.31, 126.91,78.23, 131.57,214.55, 279
 
 [data-configure]
 train=/media/qiuqiu/D/coco/train2017.txt
-val=/media/qiuqiu/D/coco/val2017.txt
+val=/home/faith/coco2017labels-person/coco/images/val.txt
 names=./data/coco.names

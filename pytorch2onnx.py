@@ -1,7 +1,7 @@
 import argparse
 
 import torch
-import model.detector
+import my_model.detector
 import utils.utils
 
 if __name__ == '__main__':
@@ -19,7 +19,7 @@ if __name__ == '__main__':
     cfg = utils.utils.load_datafile(opt.data)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.detector.Detector(cfg["classes"], cfg["anchor_num"], True, True).to(device)
+    model = my_model.detector.Detector(cfg["classes"], cfg["anchor_num"], True, True).to(device)
     model.load_state_dict(torch.load(opt.weights, map_location=device))
     #sets the module in eval node
     model.eval()

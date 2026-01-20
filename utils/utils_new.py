@@ -204,62 +204,74 @@ def ap_per_class1(tp, conf, pred_cls, target_cls, plot=False, names=(), eps=1e-1
     return tp, fp, p, r, f1, ap, unique_classes.astype(int)
 
 
-def ap_per_class(tp, conf, pred_cls, target_cls):
-    """ Compute the average precision, given the recall and precision curves.
-    Source: https://github.com/rafaelpadilla/Object-Detection-Metrics.
-    # Arguments
-        tp:    True positives (list).
-        conf:  Objectness value from 0-1 (list).
-        pred_cls: Predicted object classes (list).
-        target_cls: True object classes (list).
-    # Returns
-        The average precision as computed in py-faster-rcnn.
+def ap_per_class(tp, conf, pred_cls, target_cls, iou_thresholds=np.arange(0.5, 1.0, 0.05)):
+    """
+    Compute both mAP@0.5 and mAP@0.5:0.95 (COCO style),
+    and return both average curve values and last-point values for precision/recall.
+    tp:        True positives, shape [num_preds, num_thresholds].
+    conf:      Confidence scores (list).
+    pred_cls:  Predicted classes (list).
+    target_cls:True classes (list).
     """
 
-    # Sort by objectness
     i = np.argsort(-conf)
     tp, conf, pred_cls = tp[i], conf[i], pred_cls[i]
 
-    # Find unique classes
     unique_classes = np.unique(target_cls)
 
-    # Create Precision-Recall curve and compute AP for each class
-    ap, p, r = [], [], []
+    ap_coco, ap_voc = [], []
+    p_last, r_last, p_mean, r_mean = [], [], [], []
+
     for c in unique_classes:
-        i = pred_cls == c
-        n_gt = (target_cls == c).sum()  # Number of ground truth objects
-        n_p = i.sum()  # Number of predicted objects
+        idx = pred_cls == c
+        n_gt = (target_cls == c).sum()
+        n_p = idx.sum()
 
-        if n_p == 0 and n_gt == 0:
+        if n_p == 0 or n_gt == 0:
+            ap_coco.append(0)
+            ap_voc.append(0)
+            p_last.append(0); r_last.append(0)
+            p_mean.append(0); r_mean.append(0)
             continue
-        elif n_p == 0 or n_gt == 0:
-            ap.append(0)
-            r.append(0)
-            p.append(0)
-        else:
-            # Accumulate FPs and TPs
-            fpc = (1 - tp[i]).cumsum()
-            tpc = (tp[i]).cumsum()
 
-            # Recall
+        ap_class = []
+        for t_i, iou_thr in enumerate(iou_thresholds):
+            fpc = (1 - tp[idx, t_i]).cumsum()
+            tpc = (tp[idx, t_i]).cumsum()
+
             recall_curve = tpc / (n_gt + 1e-16)
-            r.append(recall_curve[-1])
+            precision_curve = tpc / (tpc + fpc + 1e-16)
 
-            # Precision
-            precision_curve = tpc / (tpc + fpc)
-            p.append(precision_curve[-1])
+            ap_class.append(compute_ap(recall_curve, precision_curve))
 
-            # AP from recall-precision curve
-            ap.append(compute_ap(recall_curve, precision_curve))
+            if np.isclose(iou_thr, 0.5):  # 单独保存 mAP@0.5
+                ap_voc.append(ap_class[-1])
+                p_last.append(precision_curve[-1])
+                r_last.append(recall_curve[-1])
+                p_mean.append(np.mean(precision_curve))
+                r_mean.append(np.mean(recall_curve))
 
-    # Compute F1 score (harmonic mean of precision and recall)
-    p, r, ap = np.array(p), np.array(r), np.array(ap)
-    f1 = 2 * p * r / (p + r + 1e-16)
+        ap_coco.append(np.mean(ap_class))  # 平均所有 IoU 阈值的 AP
 
-    return np.mean(p), np.mean(r), np.mean(ap), np.mean(f1)
+    return {
+        "precision_last": np.mean(p_last),
+        "recall_last": np.mean(r_last),
+        "precision_mean": np.mean(p_mean),
+        "recall_mean": np.mean(r_mean),
+        "mAP@0.5": np.mean(ap_voc),
+        "mAP@0.5:0.95": np.mean(ap_coco),
+        "f1_last": 2 * np.mean(p_last) * np.mean(r_last) / (np.mean(p_last) + np.mean(r_last) + 1e-16),
+        "f1_mean": 2 * np.mean(p_mean) * np.mean(r_mean) / (np.mean(p_mean) + np.mean(r_mean) + 1e-16),
+    }
 
-def get_batch_statistics(outputs, targets, iou_threshold, device):
-    """ Compute true positives, predicted scores and predicted labels per sample """
+
+
+
+def get_batch_statistics(outputs, targets, device, iou_thresholds=np.arange(0.5, 1.0, 0.05)):
+    """ 
+    Compute true positives, predicted scores and predicted labels per sample 
+    for multiple IoU thresholds (COCO mAP@0.5:0.95).
+    """
     batch_metrics = []
     for sample_i in range(len(outputs)):
 
@@ -271,7 +283,8 @@ def get_batch_statistics(outputs, targets, iou_threshold, device):
         pred_scores = output[:, 4]
         pred_labels = output[:, -1]
 
-        true_positives = np.zeros(pred_boxes.shape[0])
+        # true_positives: shape [num_preds, num_thresholds]
+        true_positives = np.zeros((pred_boxes.shape[0], len(iou_thresholds)))
 
         annotations = targets[targets[:, 0] == sample_i][:, 1:]
         target_labels = annotations[:, 0] if len(annotations) else []
@@ -280,24 +293,29 @@ def get_batch_statistics(outputs, targets, iou_threshold, device):
             target_boxes = annotations[:, 1:]
 
             for pred_i, (pred_box, pred_label) in enumerate(zip(pred_boxes, pred_labels)):
-                
                 pred_box = pred_box.to(device)
                 pred_label = pred_label.to(device)
 
-                # If targets are found break
                 if len(detected_boxes) == len(annotations):
                     break
 
-                # Ignore if label is not one of the target labels
-                if pred_label.to(device) not in target_labels:
+                if pred_label not in target_labels:
                     continue
 
                 iou, box_index = bbox_iou(pred_box.unsqueeze(0), target_boxes).max(0)
-                if iou >= iou_threshold and box_index not in detected_boxes:
-                    true_positives[pred_i] = 1
-                    detected_boxes += [box_index]
-        batch_metrics.append([true_positives, pred_scores, pred_labels])
+
+                for t_i, iou_thr in enumerate(iou_thresholds):
+                    if iou >= iou_thr and box_index not in detected_boxes:
+                        true_positives[pred_i, t_i] = 1
+
+                if iou >= iou_thresholds[0]:  # 最低阈值即可认为匹配
+                    detected_boxes.append(box_index)
+
+        batch_metrics.append([true_positives, pred_scores.cpu().numpy(), pred_labels.cpu().numpy()])
     return batch_metrics
+
+
+
 
 def non_max_suppression(prediction, conf_thres=0.3, iou_thres=0.45, classes=None):
     """Performs Non-Maximum Suppression (NMS) on inference results
@@ -385,13 +403,6 @@ def handel_preds(preds, cfg, device):
         cls_preds = preds[(i * 3) + 2]
 
         for r, o, c in zip(reg_preds, obj_preds, cls_preds):
-            if isinstance(r, np.ndarray):
-               r = torch.from_numpy(r)
-            if isinstance(o, np.ndarray):
-                o = torch.from_numpy(o)
-            if isinstance(c, np.ndarray):
-                c = torch.from_numpy(c)
-            
             r = r.permute(1, 2, 0)
             r = r.reshape(r.shape[0], r.shape[1], cfg["anchor_num"], -1)
 
@@ -435,11 +446,11 @@ def handel_preds(preds, cfg, device):
     return output
 
 #模型评估
-def evaluation(val_dataloader, cfg, model, device, conf_thres = 0.01, nms_thresh = 0.4, iou_thres = 0.5):
-    print(conf_thres, nms_thresh, iou_thres)
+def evaluation(val_dataloader, cfg, model, device, conf_thres=0.01, nms_thresh=0.4):
+    print(conf_thres, nms_thresh)
 
     labels = []
-    sample_metrics = []  # List of tuples (TP, confs, pred)
+    sample_metrics = []  # List of tuples (TP, confs, pred, iou)
     pbar = tqdm(val_dataloader)
 
     for imgs, targets in pbar:
@@ -458,19 +469,22 @@ def evaluation(val_dataloader, cfg, model, device, conf_thres = 0.01, nms_thresh
 
             #特征图后处理:生成anchorbox
             output = handel_preds(preds, cfg, device)
-            output_boxes = non_max_suppression(output, conf_thres = conf_thres, iou_thres = nms_thresh)
+            output_boxes = non_max_suppression(output, conf_thres=conf_thres, iou_thres=nms_thresh)
 
-        sample_metrics += get_batch_statistics(output_boxes, targets, iou_thres, device)
-        pbar.set_description("Evaluation model:") 
+        # 注意：这里不再只传一个 iou_thres，而是把所有 IoU 阈值交给 get_batch_statistics
+        sample_metrics += get_batch_statistics(output_boxes, targets, device)
 
-    if len(sample_metrics) == 0:  # No detections over whole validation set.
+        pbar.set_description("Evaluation model:")
+
+    if len(sample_metrics) == 0:
         print("---- No detections over whole validation set ----")
         return None
 
     # Concatenate sample statistics
     true_positives, pred_scores, pred_labels = [np.concatenate(x, 0) for x in list(zip(*sample_metrics))]
     metrics_output = ap_per_class(true_positives, pred_scores, pred_labels, labels)
-    return metrics_output     
+    return metrics_output
+ 
 
     
     # tp, fp, p, r, f1, ap, ap_class = ap_per_class1(true_positives, pred_scores, pred_labels, labels, names={0: "person"})

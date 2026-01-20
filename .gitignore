@@ -4,3 +4,6 @@ utils/__pycache__
 weights
 data/voc.data
 data/voc.names
+
+*.pyc
+*.png

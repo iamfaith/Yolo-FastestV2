@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 
-from model.fpn import *
-from model.backbone.shufflenetv2 import *
+from .fpn import *
+from .backbone.shufflenetv2 import *
 
 class Detector(nn.Module):
     def __init__(self, classes, anchor_num, load_param, export_onnx = False):
@@ -30,21 +30,21 @@ class Detector(nn.Module):
         out_obj_3 = self.output_obj_layers(obj_3)
         out_cls_3 = self.output_cls_layers(cls_3)
         
-        if self.export_onnx:
-            out_reg_2 = out_reg_2.sigmoid()
-            out_obj_2 = out_obj_2.sigmoid()
-            out_cls_2 = F.softmax(out_cls_2, dim = 1)
+        # if self.export_onnx:
+        #     out_reg_2 = out_reg_2.sigmoid()
+        #     out_obj_2 = out_obj_2.sigmoid()
+        #     out_cls_2 = F.softmax(out_cls_2, dim = 1)
 
-            out_reg_3 = out_reg_3.sigmoid()
-            out_obj_3 = out_obj_3.sigmoid()
-            out_cls_3 = F.softmax(out_cls_3, dim = 1)
+        #     out_reg_3 = out_reg_3.sigmoid()
+        #     out_obj_3 = out_obj_3.sigmoid()
+        #     out_cls_3 = F.softmax(out_cls_3, dim = 1)
 
-            print("export onnx ...")
-            return torch.cat((out_reg_2, out_obj_2, out_cls_2), 1).permute(0, 2, 3, 1), \
-                   torch.cat((out_reg_3, out_obj_3, out_cls_3), 1).permute(0, 2, 3, 1)  
+        #     print("export onnx ...")
+        #     return torch.cat((out_reg_2, out_obj_2, out_cls_2), 1).permute(0, 2, 3, 1), \
+        #            torch.cat((out_reg_3, out_obj_3, out_cls_3), 1).permute(0, 2, 3, 1)  
 
-        else:
-            return out_reg_2, out_obj_2, out_cls_2, out_reg_3, out_obj_3, out_cls_3
+        # else:
+        return out_reg_2, out_obj_2, out_cls_2, out_reg_3, out_obj_3, out_cls_3
 
 if __name__ == "__main__":
     model = Detector(80, 3, False)

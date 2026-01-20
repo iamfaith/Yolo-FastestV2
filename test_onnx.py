@@ -2,10 +2,11 @@ import os
 import cv2
 import time
 import argparse
-
-import torch
-import my_model.detector
+import onnxruntime
+# import torch
+# import my_model.detector
 import utils.utils
+import numpy as np
 
 if __name__ == '__main__':
     #指定训练配置文件
@@ -24,29 +25,48 @@ if __name__ == '__main__':
 
     #模型加载
     # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device("cpu")
-    model = my_model.detector.Detector(cfg["classes"], cfg["anchor_num"], True).to(device)
-    model.load_state_dict(torch.load(opt.weights, map_location=device))
+    # device = torch.device("cpu")
+    # model = my_model.detector.Detector(cfg["classes"], cfg["anchor_num"], True).to(device)
+    # model.load_state_dict(torch.load(opt.weights, map_location=device))
 
-    #sets the module in eval node
-    model.eval()
+    # #sets the module in eval node
+    # model.eval()
+
+    model_path = "yolo-fastestv2.onnx"
+    session = onnxruntime.InferenceSession(
+                model_path,
+                providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+            )
+            # Get model info
+    output_names = [x.name for x in session.get_outputs()]
+    input_names = [x.name for x in session.get_inputs()]
     
     #数据预处理
     ori_img = cv2.imread(opt.img)
     res_img = cv2.resize(ori_img, (cfg["width"], cfg["height"]), interpolation = cv2.INTER_LINEAR) 
     img = res_img.reshape(1, cfg["height"], cfg["width"], 3)
-    img = torch.from_numpy(img.transpose(0,3, 1, 2))
-    img = img.to(device).float() / 255.0
+
+    
+    # image = resized_image.transpose(2, 0, 1)  # Convert from HWC -> CHW
+    image = img.transpose(0,3, 1, 2)  # Convert from HWC -> CHW
+    # image = image[::-1]  # Convert BGR to RGB
+    image = np.ascontiguousarray(image)
+    image = image.astype(np.float32) / 255.0  # Normalize the input
+        
+        
+    # img = torch.from_numpy(img.transpose(0,3, 1, 2))
+    # img = img.to(device).float() / 255.0
 
     #模型推理
     start = time.perf_counter()
-    preds = model(img)
+    # preds = model(img)
+    preds = session.run(output_names, {input_names[0]: image})
     end = time.perf_counter()
     time = (end - start) * 1000.
     print("forward time:%fms"%time)
 
     #特征图后处理
-    output = utils.utils.handel_preds(preds, cfg, device)
+    output = utils.utils.handel_preds(preds, cfg, "cpu")
     output_boxes = utils.utils.non_max_suppression(output, conf_thres = 0.3, iou_thres = 0.4)
 
     #加载label names
@@ -72,6 +92,6 @@ if __name__ == '__main__':
         cv2.putText(ori_img, '%.2f' % obj_score, (x1, y1 - 5), 0, 0.7, (0, 255, 0), 2)	
         cv2.putText(ori_img, category, (x1, y1 - 25), 0, 0.7, (0, 255, 0), 2)
 
-    cv2.imwrite("test_result_torch.png", ori_img)
+    cv2.imwrite("test_result_onnx.png", ori_img)
     
 
